@@ -1,0 +1,34 @@
+version: "3.9"
+
+services:
+  api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: "sqlite:///./alloy_iq.db"
+      SECRET_KEY: "change-me-in-production"
+    volumes:
+      - ./backend:/app
+      - ./models:/app/models
+    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      NEXT_PUBLIC_API_URL: "http://localhost:8000"
+    depends_on:
+      - api
+
+  blender_worker:
+    image: nytimes/blender:3.6
+    volumes:
+      - ./blender:/scripts
+      - ./renders:/renders
+    command: ["tail", "-f", "/dev/null"]   # kept alive; jobs triggered via API

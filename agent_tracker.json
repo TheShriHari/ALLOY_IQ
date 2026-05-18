@@ -1,0 +1,7 @@
+{
+  "project": "ALLOY IQ",
+  "description": "Tracks successfully written .parquet files by the data ingestion pipeline.",
+  "pipeline_version": "1.0.0",
+  "parquet_files": {},
+  "last_updated": null
+}

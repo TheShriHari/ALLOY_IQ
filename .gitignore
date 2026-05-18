@@ -1,0 +1,54 @@
+# Dependency folders
+node_modules/
+frontend/node_modules/
+.venv/
+venv/
+env/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Build & caching
+.next/
+frontend/.next/
+out/
+frontend/out/
+build/
+frontend/build/
+.pytest_cache/
+.pnp
+.pnp.*
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/versions
+*.tsbuildinfo
+
+# OS & Editor configurations
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+*.pem
+
+# Local databases and logs
+*.db
+alloy_iq.db
+*.sqlite
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# Machine learning models (ignore actual weights but keep structure)
+models/*
+!models/.gitkeep

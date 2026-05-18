@@ -1,0 +1,60 @@
+# ── API & Server ─────────────────────────────────────────────────────────────
+fastapi==0.111.0
+uvicorn[standard]==0.29.0
+pydantic==2.7.1
+python-multipart==0.0.9
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
+
+# ── Database ──────────────────────────────────────────────────────────────────
+sqlalchemy==2.0.30
+alembic==1.13.1
+aiosqlite==0.20.0          # async SQLite for dev
+
+# ── Async Task Queue ─────────────────────────────────────────────────────────
+celery==5.4.0
+redis==5.0.4
+
+# ── ML Core ──────────────────────────────────────────────────────────────────
+numpy==1.26.4
+pandas==2.2.2
+scipy==1.13.0
+scikit-learn==1.4.2
+xgboost==2.0.3
+# torch==2.3.0
+optuna==3.6.1
+
+# ── Testing ──────────────────────────────────────────────────────────────────
+pytest==8.2.0
+pytest-asyncio==0.23.6
+
+
+# ── SHAP ─────────────────────────────────────────────────────────────────────
+shap==0.45.0
+
+# ── Inverse Design ───────────────────────────────────────────────────────────
+deap==1.4.1
+
+# ── Materials Informatics ─────────────────────────────────────────────────────
+matminer==0.9.2
+pymatgen==2024.5.1
+
+# ── Utilities ────────────────────────────────────────────────────────────────
+joblib==1.4.2
+httpx==0.27.0
+python-dotenv==1.0.1
+loguru==0.7.2
+
+# ── Data Ingestion Pipeline ───────────────────────────────────────────────────
+aiohttp==3.9.5               # async HTTP (alternative to httpx for AFLOW)
+pyarrow==16.1.0              # parquet engine
+fastparquet==2024.2.0        # alternative parquet engine
+
+# ── PDF Extraction ─────────────────────────────────────────────────────────────
+pdfplumber==0.11.1           # Tier 1: lattice/stream table extraction
+pymupdf==1.24.3              # PyMuPDF: page-to-image for LLM-vision tier
+# nougat-ocr==0.1.17         # Tier 2: Meta's academic PDF parser (install separately; large model)
+# google-generativeai>=1.7   # Tier 3: Gemini Vision (install separately if using LLM vision)
+
+# ── Materials Project API ─────────────────────────────────────────────────────
+mp-api==0.41.2               # Official Materials Project Python client

@@ -1,0 +1,150 @@
+@import "tailwindcss";
+
+:root {
+  --color-bg:        #080B14;
+  --color-surface:   #0F1322;
+  --color-surface-2: #141828;
+  --color-border:    rgba(99, 130, 255, 0.15);
+  --color-primary:   #6382FF;
+  --color-accent:    #00E5FF;
+  --color-gold:      #FFB547;
+  --color-danger:    #FF4D6A;
+  --color-text:      #E8EEFF;
+  --color-muted:     #6B7A9E;
+  --font-inter:      'Inter', system-ui, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  font-family: var(--font-inter);
+  background: var(--color-bg);
+  color: var(--color-text);
+  overflow-x: hidden;
+}
+
+/* ─── Scrollbar ──────────────────────────────────────────────────────────── */
+::-webkit-scrollbar        { width: 6px; }
+::-webkit-scrollbar-track  { background: var(--color-bg); }
+::-webkit-scrollbar-thumb  { background: var(--color-primary); border-radius: 3px; }
+
+/* ─── Glass card ─────────────────────────────────────────────────────────── */
+.glass {
+  background: rgba(15, 19, 34, 0.7);
+  backdrop-filter: blur(20px);
+  border: 1px solid var(--color-border);
+  border-radius: 16px;
+}
+
+/* ─── Gradient text ──────────────────────────────────────────────────────── */
+.gradient-text {
+  background: linear-gradient(135deg, var(--color-primary) 0%, var(--color-accent) 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+/* ─── Glow button ────────────────────────────────────────────────────────── */
+.btn-glow {
+  background: linear-gradient(135deg, var(--color-primary), var(--color-accent));
+  border: none;
+  border-radius: 10px;
+  padding: 12px 28px;
+  font-weight: 600;
+  font-size: 0.95rem;
+  color: #fff;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  box-shadow: 0 0 20px rgba(99, 130, 255, 0.35);
+  letter-spacing: 0.01em;
+}
+.btn-glow:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 0 32px rgba(99, 130, 255, 0.55);
+}
+.btn-glow:active { transform: translateY(0); }
+
+/* ─── Subtle button ──────────────────────────────────────────────────────── */
+.btn-ghost {
+  background: transparent;
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  padding: 11px 24px;
+  font-weight: 500;
+  font-size: 0.9rem;
+  color: var(--color-muted);
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+.btn-ghost:hover {
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+  background: rgba(99, 130, 255, 0.06);
+}
+
+/* ─── Badge ──────────────────────────────────────────────────────────────── */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.badge-high     { background: rgba(0, 229, 119, 0.12); color: #00E577; border: 1px solid rgba(0,229,119,0.3); }
+.badge-moderate { background: rgba(255, 181, 71, 0.12); color: #FFB547; border: 1px solid rgba(255,181,71,0.3); }
+.badge-low      { background: rgba(255, 77, 106, 0.12); color: #FF4D6A; border: 1px solid rgba(255,77,106,0.3); }
+
+/* ─── Input ──────────────────────────────────────────────────────────────── */
+.input-field {
+  background: var(--color-surface-2);
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  padding: 10px 14px;
+  color: var(--color-text);
+  font-family: var(--font-inter);
+  font-size: 0.9rem;
+  outline: none;
+  transition: border-color 0.2s;
+  width: 100%;
+}
+.input-field:focus {
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 3px rgba(99, 130, 255, 0.12);
+}
+
+/* ─── Animations ─────────────────────────────────────────────────────────── */
+@keyframes float {
+  0%, 100% { transform: translateY(0); }
+  50%       { transform: translateY(-10px); }
+}
+@keyframes pulse-glow {
+  0%, 100% { box-shadow: 0 0 20px rgba(99, 130, 255, 0.3); }
+  50%       { box-shadow: 0 0 40px rgba(99, 130, 255, 0.6); }
+}
+@keyframes shimmer {
+  0%   { background-position: -200% center; }
+  100% { background-position:  200% center; }
+}
+
+.float-anim   { animation: float 4s ease-in-out infinite; }
+.pulse-anim   { animation: pulse-glow 2s ease-in-out infinite; }
+
+/* ─── Section spacing ────────────────────────────────────────────────────── */
+.section { padding: 80px 0; }
+.container {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 0 24px;
+}
