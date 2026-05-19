@@ -115,7 +115,7 @@ export const api = {
     const params = new URLSearchParams();
     params.append("username", email);
     params.append("password", password);
-    const res = await fetch(`${API_BASE}/auth/login`, {
+    const res = await fetch(`${API_BASE}/api/v1/auth/login`, {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: params,
@@ -124,7 +124,7 @@ export const api = {
   },
 
   async register(email: string, password: string, name: string): Promise<{ access_token: string }> {
-    const res = await fetch(`${API_BASE}/auth/register`, {
+    const res = await fetch(`${API_BASE}/api/v1/auth/register`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ email, password, display_name: name }),
@@ -134,7 +134,7 @@ export const api = {
 
   // Prediction
   async predict(alloyFamily: string, property: string, composition: ElementComposition): Promise<PredictionResponse> {
-    const res = await fetch(`${API_BASE}/predict/mechanical`, {
+    const res = await fetch(`${API_BASE}/api/v1/predict/mechanical`, {
       method: "POST",
       headers: { "Content-Type": "application/json", ...getAuthHeader() },
       body: JSON.stringify({ alloy_family: alloyFamily, property, composition }),
@@ -143,7 +143,7 @@ export const api = {
   },
 
   async explain(alloyFamily: string, property: string, composition: ElementComposition): Promise<ShapResponse> {
-    const res = await fetch(`${API_BASE}/predict/explain`, {
+    const res = await fetch(`${API_BASE}/api/v1/predict/explain`, {
       method: "POST",
       headers: { "Content-Type": "application/json", ...getAuthHeader() },
       body: JSON.stringify({ alloy_family: alloyFamily, property, composition }),
@@ -152,7 +152,7 @@ export const api = {
   },
 
   async getPdp(alloyFamily: string, element: string, composition: ElementComposition): Promise<PdpResponse> {
-    const res = await fetch(`${API_BASE}/explain/pdp`, {
+    const res = await fetch(`${API_BASE}/api/v1/explain/pdp`, {
       method: "POST",
       headers: { "Content-Type": "application/json", ...getAuthHeader() },
       body: JSON.stringify({ alloy_family: alloyFamily, element, composition }),
@@ -162,7 +162,7 @@ export const api = {
 
   // History
   async getHistory(): Promise<Array<{ id: string; created_at: string; composition: Record<string, number>; predictions: PredictionResponse }>> {
-    const res = await fetch(`${API_BASE}/history`, {
+    const res = await fetch(`${API_BASE}/api/v1/history`, {
       headers: { ...getAuthHeader() },
     });
     return handleResponse(res);
@@ -170,7 +170,7 @@ export const api = {
 
   // Blender render
   async requestRender(composition: ElementComposition, predictions: PredictionResponse): Promise<{ job_id: string }> {
-    const res = await fetch(`${API_BASE}/blender/render`, {
+    const res = await fetch(`${API_BASE}/api/v1/blender/render`, {
       method: "POST",
       headers: { "Content-Type": "application/json", ...getAuthHeader() },
       body: JSON.stringify({ composition, predictions }),
@@ -179,7 +179,7 @@ export const api = {
   },
 
   async pollRender(jobId: string): Promise<{ status: "queued" | "running" | "complete" | "failed"; image_url?: string }> {
-    const res = await fetch(`${API_BASE}/blender/render/${jobId}`, {
+    const res = await fetch(`${API_BASE}/api/v1/blender/render/${jobId}`, {
       headers: { ...getAuthHeader() },
     });
     return handleResponse(res);

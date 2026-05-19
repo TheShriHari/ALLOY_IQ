@@ -1,4 +1,4 @@
-# ALLOY IQ 🧪🔬
+# ALLOY IQ
 > **AI-Powered Materials Property Prediction & Metallurgical Microstructure Generation**
 
 [![Next.js](https://img.shields.io/badge/Frontend-Next.js%2015-black?style=flat-square&logo=next.js)](https://nextjs.org/)

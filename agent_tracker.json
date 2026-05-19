@@ -2,6 +2,46 @@
   "project": "ALLOY IQ",
   "description": "Tracks successfully written .parquet files by the data ingestion pipeline.",
   "pipeline_version": "1.0.0",
-  "parquet_files": {},
-  "last_updated": null
+  "parquet_files": {
+    "tier1_oqmd.parquet": "ready",
+    "tier2_kaggle.parquet": "ready",
+    "tier3_mpea.parquet": "ready",
+    "tier4_scraped.parquet": "ready"
+  },
+  "last_updated": "2026-05-19T07:44:57Z",
+  "agents": {
+    "gemini_pro": {
+      "status": "completed",
+      "current_task": "ALL_TASKS_COMPLETED",
+      "last_updated": "2026-05-19T07:53:48.915561"
+    },
+    "gemini_flash": {
+      "status": "completed",
+      "current_task": "DEVOPS_SCALABILITY_COMPLETED",
+      "last_updated": "2026-05-19T08:15:00Z",
+      "validation_metrics": {
+        "python_tests_passed": 16,
+        "nextjs_build_exit_code": 0,
+        "modified_files": [
+          "backend/ml/model_engine.py",
+          "frontend/src/lib/api.ts",
+          "backend/main.py",
+          "backend/ws/optimizer_ws.py",
+          "README.md",
+          "frontend/src/app/page.tsx",
+          "backend/tests/test_api.py",
+          "backend/tests/test_api_routes.py",
+          "frontend/src/types/react-plotly.d.ts",
+          "backend/tasks/celery_app.py",
+          "backend/tasks/render_task.py",
+          "backend/db/models.py"
+        ],
+        "scalability_features": [
+          "Celery queue routing defined for render_queue and inverse_queue",
+          "Worker process isolation limits with soft/hard timeouts and os.kill()",
+          "SQLAlchemy InverseDesignJob checkpointing and warm-start socket resumption"
+        ]
+      }
+    }
+  }
 }

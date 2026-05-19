@@ -17,7 +17,7 @@ def test_health():
 def test_predict_mechanical_steel_yield_strength():
     payload = {
         "alloy_family": "steel",
-        "property": "yield_strength",
+        "property": "yield_strength_mpa",
         "composition": {
             "Fe": 0.69,
             "Cr": 0.225,
@@ -27,19 +27,21 @@ def test_predict_mechanical_steel_yield_strength():
         },
         "confidence": 0.90
     }
-    response = client.post("/predict/mechanical", json=payload)
+    response = client.post("/api/v1/predict/mechanical", json=payload)
     assert response.status_code == 200, response.text
     data = response.json()
-    assert "prediction" in data
-    assert "lower" in data
-    assert "upper" in data
+    assert "predictions" in data
+    assert "yield_strength_mpa" in data["predictions"]
+    assert "mean" in data["predictions"]["yield_strength_mpa"]
+    assert "lower" in data["predictions"]["yield_strength_mpa"]
+    assert "upper" in data["predictions"]["yield_strength_mpa"]
     assert "job_id" in data
-    assert data["unit"] == "MPa"
+    assert "corrosion_analysis" in data
 
 def test_predict_explain_steel_yield_strength():
     payload = {
         "alloy_family": "steel",
-        "property": "yield_strength",
+        "property": "yield_strength_mpa",
         "composition": {
             "Fe": 0.69,
             "Cr": 0.225,
@@ -48,11 +50,8 @@ def test_predict_explain_steel_yield_strength():
             "Mn": 0.005
         }
     }
-    response = client.post("/predict/explain", json=payload)
+    response = client.post("/api/v1/predict/explain", json=payload)
     assert response.status_code == 200, response.text
     data = response.json()
-    assert "shap" in data
-    shap_data = data["shap"]
-    assert "waterfall" in shap_data
-    assert "narrative" in shap_data
-    assert "base_value" in shap_data
+    assert "shap_values" in data
+    assert "narrative" in data

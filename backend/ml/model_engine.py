@@ -14,7 +14,7 @@ import os
 import json
 import time
 from pathlib import Path
-from typing import Dict, List, Literal, Optional, Tuple
+from typing import Any, Dict, List, Literal, Optional, Tuple
 
 import joblib
 import numpy as np
@@ -39,7 +39,7 @@ except ImportError:
 import shap
 
 from backend.ml.uncertainty import AlloyUncertainty
-from backend.ml.narrative import generate_full_report, SHAPNarrativeGenerator
+from backend.ml.narrative import generate_full_report
 from backend.ml.mlflow_config import setup_mlflow, log_training_run
 
 # ---------------------------------------------------------------------------
@@ -191,8 +191,8 @@ class FamilyModel:
                 "predictions": res,
                 "confidence_level": self.confidence,
                 "data_confidence": confidence_map[self.coverage],
-                "shap": {"frac_C": 100.0, "frac_Fe": 50.0},
-                "narrative": "Model not loaded. This is a placeholder.",
+                "shap_dicts": {t: {"frac_C": 100.0, "frac_Fe": 50.0} for t in TARGET_NAMES},
+                "narratives": {t: "Model not loaded. This is a placeholder." for t in TARGET_NAMES},
             }
 
         # Conformal predictions
@@ -280,6 +280,23 @@ class AlloyModelEngine:
 
     def __init__(self):
         self._models: Dict[str, FamilyModel] = {}
+
+    def available_cells(self) -> List[Dict[str, Any]]:
+        """Returns metadata about all available model cells and their coverage."""
+        family_display = {
+            "steel": "steels",
+            "aluminum": "aluminum",
+            "hea": "HEAs"
+        }
+        return [
+            {
+                "family": family_display.get(family, family),
+                "key": family,
+                "coverage": coverage,
+                "targets": TARGET_NAMES
+            }
+            for family, coverage in CELL_COVERAGE.items()
+        ]
 
     @staticmethod
     def wait_for_ingestion(timeout_sec: int = 600, check_interval: int = 5) -> bool:

@@ -10,7 +10,7 @@ DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./alloy_iq.db")
 engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 
-@celery_app.task(bind=True, max_retries=2, soft_time_limit=120)
+@celery_app.task(bind=True, max_retries=2, time_limit=120, soft_time_limit=90)
 def render_microstructure(self, job_id: str, composition: dict, predictions: dict):
     """
     Celery task: runs Blender headless render and saves output PNG.
@@ -19,6 +19,7 @@ def render_microstructure(self, job_id: str, composition: dict, predictions: dic
     from blender.microstructure_bridge import estimate_phase_fractions, get_generator_path
 
     db = SessionLocal()
+    proc = None
     try:
         # Update job status in DB
         job = db.query(RenderJob).filter(RenderJob.id == job_id).first()
@@ -54,15 +55,26 @@ def render_microstructure(self, job_id: str, composition: dict, predictions: dic
             json.dumps(cli_args)
         ]
 
-        result = subprocess.run(
+        # Use Popen to allow PID tracking and forced killing
+        proc = subprocess.Popen(
             cmd,
-            capture_output=True,
-            text=True,
-            timeout=90
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True
         )
 
-        if result.returncode != 0:
-            raise Exception(f"Blender failed: {result.stderr or result.stdout}")
+        try:
+            stdout, stderr = proc.communicate(timeout=90)
+            if proc.returncode != 0:
+                raise Exception(f"Blender failed: {stderr or stdout}")
+        except subprocess.TimeoutExpired as exc:
+            if proc:
+                import signal
+                try:
+                    os.kill(proc.pid, signal.SIGKILL)
+                except Exception:
+                    pass
+            raise exc
 
         # Update DB job to complete
         if job:
@@ -85,4 +97,10 @@ def render_microstructure(self, job_id: str, composition: dict, predictions: dic
         except Exception:
             raise exc
     finally:
+        if proc and proc.poll() is None:
+            import signal
+            try:
+                os.kill(proc.pid, signal.SIGKILL)
+            except Exception:
+                pass
         db.close()

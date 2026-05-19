@@ -38,7 +38,7 @@ def credentials():
 
 def test_register_flow(credentials):
     # Register new user
-    response = client.post("/auth/register", json=credentials)
+    response = client.post("/api/v1/auth/register", json=credentials)
     assert response.status_code == 200
     data = response.json()
     assert "access_token" in data
@@ -46,7 +46,7 @@ def test_register_flow(credentials):
 
 def test_register_duplicate(credentials):
     # Try registering again with duplicate email
-    response = client.post("/auth/register", json=credentials)
+    response = client.post("/api/v1/auth/register", json=credentials)
     assert response.status_code == 400
     assert response.json()["detail"] == "Email already registered"
 
@@ -56,7 +56,7 @@ def test_login_flow(credentials):
         "username": credentials["email"],
         "password": credentials["password"]
     }
-    response = client.post("/auth/login", data=login_data)
+    response = client.post("/api/v1/auth/login", data=login_data)
     assert response.status_code == 200
     data = response.json()
     assert "access_token" in data
@@ -65,7 +65,7 @@ def test_prediction_secured_access(credentials):
     # Attempt to predict without auth token (Wait, if dev bypass exists in get_current_user, let's verify if dev bypass is triggered if no token is passed!)
     # But passing invalid token should raise 401:
     response = client.post(
-        "/predict/mechanical",
+        "/api/v1/predict/mechanical",
         json={
             "alloy_family": "steel",
             "property": "yield_strength",
@@ -81,25 +81,24 @@ def test_prediction_authorized(credentials):
         "username": credentials["email"],
         "password": credentials["password"]
     }
-    login_res = client.post("/auth/login", data=login_data)
+    login_res = client.post("/api/v1/auth/login", data=login_data)
     token = login_res.json()["access_token"]
     
     # Run prediction
     headers = {"Authorization": f"Bearer {token}"}
     response = client.post(
-        "/predict/mechanical",
+        "/api/v1/predict/mechanical",
         json={
             "alloy_family": "steel",
-            "property": "yield_strength",
+            "property": "yield_strength_mpa",
             "composition": {"Fe": 0.70, "Cr": 0.18, "Ni": 0.08, "C": 0.02, "Mn": 0.02}
         },
         headers=headers
     )
     assert response.status_code == 200
     data = response.json()
-    assert "prediction" in data
+    assert "predictions" in data
     assert "job_id" in data
-    assert data["unit"] == "MPa"
 
 def test_history_secured(credentials):
     # Log in to get token
@@ -107,14 +106,14 @@ def test_history_secured(credentials):
         "username": credentials["email"],
         "password": credentials["password"]
     }
-    login_res = client.post("/auth/login", data=login_data)
+    login_res = client.post("/api/v1/auth/login", data=login_data)
     token = login_res.json()["access_token"]
     
     # Fetch prediction history
     headers = {"Authorization": f"Bearer {token}"}
-    response = client.get("/history", headers=headers)
+    response = client.get("/api/v1/history", headers=headers)
     assert response.status_code == 200
     history = response.json()
     assert len(history) >= 1
     assert history[0]["alloy_family"] == "steel"
-    assert history[0]["property"] == "yield_strength"
+    assert history[0]["property"] == "yield_strength_mpa"

@@ -8,7 +8,7 @@ const FEATURES = [
   {
     icon: <Brain size={24} />,
     title: "12-Cell ML Matrix",
-    desc: "XGBoost + RF + MLP stacking ensemble across all property × family combinations, with Bayesian HPO via Optuna.",
+    desc: "XGBoost + RF + MLP stacking ensemble across all property x family combinations, with Bayesian HPO via Optuna.",
     color: "#6382FF",
   },
   {
@@ -26,7 +26,7 @@ const FEATURES = [
   {
     icon: <Shield size={24} />,
     title: "Conformal Uncertainty",
-    desc: "Calibrated confidence intervals at 80/90/95% guaranteed coverage — not just a number with no context.",
+    desc: "Calibrated confidence intervals at 80/90/95% guaranteed coverage - not just a number with no context.",
     color: "#00E577",
   },
   {
@@ -38,14 +38,14 @@ const FEATURES = [
   {
     icon: <Atom size={24} />,
     title: "Three Alloy Families",
-    desc: "Steels, High-Entropy Alloys, and Aluminum Alloys — each with tailored physics-informed descriptors.",
+    desc: "Steels, High-Entropy Alloys, and Aluminum Alloys - each with tailored physics-informed descriptors.",
     color: "#B47AFF",
   },
 ];
 
 const STATS = [
   { value: "12",    label: "Property Cells"     },
-  { value: "0.93+", label: "R² on Rich Cells"   },
+  { value: "0.93+", label: "R^2 on Rich Cells"   },
   { value: "3",     label: "Alloy Families"      },
   { value: "90%",   label: "Conformal Coverage"  },
 ];
@@ -84,7 +84,7 @@ function FeatureCard({ icon, title, desc, color }: { icon: React.ReactNode; titl
 export default function HomePage() {
   return (
     <main style={{ paddingTop: 64 }}>
-      {/* ── Hero ──────────────────────────────────────────────────────────── */}
+      {/* -- Hero ------------------------------------------------------------- */}
       <section style={{
         minHeight: "92vh", display: "flex", alignItems: "center",
         position: "relative", overflow: "hidden",
@@ -148,7 +148,7 @@ export default function HomePage() {
         </div>
       </section>
 
-      {/* ── Stats bar ─────────────────────────────────────────────────────── */}
+      {/* -- Stats bar -------------------------------------------------------- */}
       <section style={{
         borderTop: "1px solid var(--color-border)", borderBottom: "1px solid var(--color-border)",
         background: "var(--color-surface)", padding: "32px 0",
@@ -167,7 +167,7 @@ export default function HomePage() {
         </div>
       </section>
 
-      {/* ── Features ──────────────────────────────────────────────────────── */}
+      {/* -- Features --------------------------------------------------------- */}
       <section className="section">
         <div className="container">
           <div style={{ textAlign: "center", marginBottom: 60 }}>
@@ -186,7 +186,7 @@ export default function HomePage() {
         </div>
       </section>
 
-      {/* ── CTA Banner ────────────────────────────────────────────────────── */}
+      {/* -- CTA Banner ------------------------------------------------------- */}
       <section className="section" style={{ paddingTop: 0 }}>
         <div className="container">
           <div style={{
@@ -210,7 +210,7 @@ export default function HomePage() {
         </div>
       </section>
 
-      {/* ── Footer ────────────────────────────────────────────────────────── */}
+      {/* -- Footer ----------------------------------------------------------- */}
       <footer style={{
         borderTop: "1px solid var(--color-border)", padding: "28px 0",
         textAlign: "center", color: "var(--color-muted)", fontSize: "0.82rem",

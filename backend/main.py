@@ -24,6 +24,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from backend.db.models import Base, InverseDesignJob, PredictionJob, User, RenderJob
 from backend.tasks.render_task import render_microstructure
+from backend.tasks.inverse_task import run_inverse_optimization
 from backend.ml.model_engine import AlloyModelEngine
 from backend.data.features import FeatureEngineer
 import pandas as pd
@@ -40,7 +41,7 @@ engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 
 pwd_ctx      = CryptContext(schemes=["bcrypt"], deprecated="auto")
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login")
 
 
 # ---------------------------------------------------------------------------
@@ -71,6 +72,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+from backend.ws.optimizer_ws import router as ws_router
+app.include_router(ws_router)
 
 
 # ---------------------------------------------------------------------------
@@ -105,7 +109,7 @@ def create_access_token(data: dict) -> str:
     to_encode["exp"] = datetime.utcnow() + timedelta(minutes=ACCESS_TTL_MIN)
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
-def get_current_user(token: Optional[str] = Depends(OAuth2PasswordBearer(tokenUrl="/auth/login", auto_error=False)), db: Session = Depends(get_db)) -> User:
+def get_current_user(token: Optional[str] = Depends(OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login", auto_error=False)), db: Session = Depends(get_db)) -> User:
     # --- DEV BYPASS ---
     # Create or return a dummy user for local development if no token is provided
     if not token:
@@ -169,10 +173,13 @@ class MechanicalResponse(BaseModel):
     confidence_level: float
     data_confidence: str
     corrosion_analysis: Optional[Dict[str, Any]] = None
+    fatigue: Optional[Dict[str, Any]] = None
+    fracture_toughness: Optional[Dict[str, Any]] = None
 
 class ExplainResponse(BaseModel):
     shap_values: Dict[str, float]
     narrative: str
+    top_features: List[Dict[str, Any]] = []
 
 class PDPRequest(BaseModel):
     element: str
@@ -239,7 +246,7 @@ def _build_feature_df(req: PredictRequest) -> pd.DataFrame:
 # ---------------------------------------------------------------------------
 # Routes — Auth
 # ---------------------------------------------------------------------------
-@app.post("/auth/register", response_model=TokenResponse, tags=["Auth"])
+@app.post("/api/v1/auth/register", response_model=TokenResponse, tags=["Auth"])
 def register(body: RegisterRequest, db: Session = Depends(get_db)):
     if db.query(User).filter(User.email == body.email).first():
         raise HTTPException(400, "Email already registered")
@@ -254,7 +261,7 @@ def register(body: RegisterRequest, db: Session = Depends(get_db)):
     return TokenResponse(access_token=token)
 
 
-@app.post("/auth/login", response_model=TokenResponse, tags=["Auth"])
+@app.post("/api/v1/auth/login", response_model=TokenResponse, tags=["Auth"])
 def login(form: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
     user = db.query(User).filter(User.email == form.username).first()
     if not user or not verify_password(form.password, user.hashed_pw):
@@ -266,7 +273,7 @@ def login(form: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get
 # ---------------------------------------------------------------------------
 # Routes — Prediction
 # ---------------------------------------------------------------------------
-@app.post("/predict/mechanical", response_model=MechanicalResponse, tags=["Prediction"])
+@app.post("/api/v1/predict/mechanical", response_model=MechanicalResponse, tags=["Prediction"])
 def predict_mechanical(
     req: PredictRequest,
     db: Session = Depends(get_db),
@@ -280,6 +287,10 @@ def predict_mechanical(
         from backend.ml.corrosion_features import compute_corrosion_metrics
         pren_pred = result["predictions"].get("corrosion_pren", {}).get("mean", 0.0)
         corrosion = compute_corrosion_metrics(req.composition, pren_pred)
+
+        # Fatigue & Fracture mechanics
+        from backend.ml.fatigue_model import add_fatigue_fracture
+        result = add_fatigue_fracture(result, req.composition, req.alloy_family)
 
     except Exception as e:
         logger.exception("Prediction failed")
@@ -316,9 +327,11 @@ def predict_mechanical(
         confidence_level= result["confidence_level"],
         data_confidence = result["data_confidence"],
         corrosion_analysis = corrosion,
+        fatigue          = result.get("fatigue"),
+        fracture_toughness= result.get("fracture_toughness"),
     )
 
-@app.post("/predict/explain", response_model=ExplainResponse, tags=["Prediction"])
+@app.post("/api/v1/predict/explain", response_model=ExplainResponse, tags=["Prediction"])
 def predict_explain(
     req: PredictRequest,
     current_user: User = Depends(get_current_user),
@@ -327,9 +340,23 @@ def predict_explain(
         df_feat = _build_feature_df(req)
         result  = model_engine.predict(req.alloy_family, df_feat)
         target = req.property if req.property in result["shap_dicts"] else "yield_strength_mpa"
+        shap_values = result["shap_dicts"].get(target, {})
+        
+        top_features = []
+        for feat, shap_val in shap_values.items():
+            raw_val = float(df_feat[feat].iloc[0]) if feat in df_feat.columns else 0.0
+            top_features.append({
+                "name": feat,
+                "value": raw_val,
+                "shap": shap_val,
+                "direction": "positive" if shap_val >= 0 else "negative"
+            })
+        top_features.sort(key=lambda x: abs(x["shap"]), reverse=True)
+        
         return ExplainResponse(
-            shap_values=result["shap_dicts"].get(target, {}),
-            narrative=result["narratives"].get(target, "Narrative unavailable.")
+            shap_values=shap_values,
+            narrative=result["narratives"].get(target, "Narrative unavailable."),
+            top_features=top_features
         )
     except Exception as e:
         logger.exception("Explain prediction failed")
@@ -384,7 +411,7 @@ def get_model_versions():
         return []
 
 
-@app.get("/predict/{job_id}", tags=["Prediction"])
+@app.get("/api/v1/predict/{job_id}", tags=["Prediction"])
 def get_prediction(
     job_id: str,
     db: Session = Depends(get_db),
@@ -400,49 +427,12 @@ def get_prediction(
 
 
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
 # Routes — Inverse Design
 # ---------------------------------------------------------------------------
-def _run_inverse_design(job_id: str, req: InverseRequest, db_url: str):
-    """Background task: run GA, write result to DB."""
-    from sqlalchemy import create_engine
-    from sqlalchemy.orm import sessionmaker
-    from backend.engines.inverse_design import InverseDesignEngine
-
-    eng = create_engine(db_url, connect_args={"check_same_thread": False})
-    Sess = sessionmaker(bind=eng)
-    db = Sess()
-
-    job = db.query(InverseDesignJob).filter(InverseDesignJob.id == job_id).first()
-    if not job:
-        return
-
-    try:
-        targets = {k: tuple(v) for k, v in req.targets.items()}
-        constraints = {k: tuple(v) for k, v in (req.constraints or {}).items()}
-        ide = InverseDesignEngine(model_engine, req.alloy_family)
-        result = ide.optimize(
-            targets=targets,
-            constraints=constraints,
-            n_generations=req.n_generations,
-            pop_size=req.pop_size,
-        )
-        job.pareto_front  = result["pareto_front"]
-        job.n_candidates  = result["n_candidates"]
-        job.status        = "done"
-        job.completed_at  = datetime.utcnow()
-    except Exception as e:
-        logger.exception("Inverse design failed for job {}", job_id)
-        job.status    = "error"
-        job.error_msg = str(e)
-
-    db.commit()
-    db.close()
-
-
-@app.post("/inverse", response_model=JobStatusResponse, tags=["Inverse Design"])
+@app.post("/api/v1/inverse", response_model=JobStatusResponse, tags=["Inverse Design"])
 def inverse_design(
     req: InverseRequest,
-    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -459,11 +449,20 @@ def inverse_design(
     db.commit()
     db.refresh(job)
 
-    background_tasks.add_task(_run_inverse_design, job.id, req, DATABASE_URL)
+    # Dispatch Celery background task
+    try:
+        run_inverse_optimization.delay(job.id)
+    except Exception as e:
+        logger.exception("Failed to dispatch Celery optimization task")
+        job.status = "error"
+        job.error_msg = f"Task worker dispatch error: {e}"
+        db.commit()
+        raise HTTPException(500, f"Background worker dispatch error: {e}")
+
     return JobStatusResponse(job_id=job.id, status="pending")
 
 
-@app.get("/inverse/{job_id}", response_model=JobStatusResponse, tags=["Inverse Design"])
+@app.get("/api/v1/inverse/{job_id}", response_model=JobStatusResponse, tags=["Inverse Design"])
 def get_inverse_job(
     job_id: str,
     db: Session = Depends(get_db),
@@ -475,13 +474,22 @@ def get_inverse_job(
     ).first()
     if not job:
         raise HTTPException(404, "Job not found")
+        
+    # Get standard target keys for axis rendering (handles both dict and list representation)
+    axes = []
+    if job.targets:
+        if isinstance(job.targets, dict):
+            axes = list(job.targets.keys())
+        elif isinstance(job.targets, list):
+            axes = [t.get("property") for t in job.targets if t.get("property")]
+            
     return JobStatusResponse(
         job_id=job.id,
         status=job.status,
         result={
             "pareto_front": job.pareto_front,
             "n_candidates": job.n_candidates,
-            "objective_axes": list(job.targets.keys()) if job.targets else [],
+            "objective_axes": axes,
         } if job.status == "done" else None,
     )
 
@@ -489,7 +497,7 @@ def get_inverse_job(
 # ---------------------------------------------------------------------------
 # Routes — History
 # ---------------------------------------------------------------------------
-@app.get("/history", response_model=List[HistoryItem], tags=["History"])
+@app.get("/api/v1/history", response_model=List[HistoryItem], tags=["History"])
 def get_history(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -522,7 +530,7 @@ def get_history(
 def health():
     return {"status": "ok", "service": "alloy-iq-api"}
 
-@app.get("/cells", tags=["Meta"])
+@app.get("/api/v1/cells", tags=["Meta"])
 def list_cells():
     return {"cells": model_engine.available_cells()}
 
@@ -534,7 +542,7 @@ class RenderRequest(BaseModel):
     composition: Dict[str, float]
     predictions: Dict[str, Any]
 
-@app.post("/blender/render", tags=["Blender"])
+@app.post("/api/v1/blender/render", tags=["Blender"])
 def request_render(
     body: RenderRequest,
     db: Session = Depends(get_db),
@@ -567,7 +575,7 @@ def request_render(
     return {"job_id": job_id, "status": "queued"}
 
 
-@app.get("/blender/render/{job_id}", tags=["Blender"])
+@app.get("/api/v1/blender/render/{job_id}", tags=["Blender"])
 def poll_render(
     job_id: str,
     db: Session = Depends(get_db),

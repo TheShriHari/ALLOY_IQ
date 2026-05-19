@@ -1,0 +1,47 @@
+[
+    {
+        "model_id": "job_scheduler_test_job",
+        "model_hash": "242a804505301655484a4792395ff7411ab2e819816bd56b806a048654e22ae1",
+        "feature_hash": "d585aaf3550e9265f3e0603cff24a7f256ad6ab862eb94130d6e85d01ad442b0",
+        "dataset_hash": "7b031bfa0fd3df76f3710437cb165af80816c3c8199cc5895192aca32f70c64e",
+        "metrics": {
+            "n_train_total": 12,
+            "fold_checkpoints": [
+                {
+                    "metrics": {
+                        "yield_strength_mpa_r2": 0.88
+                    }
+                },
+                {
+                    "metrics": {
+                        "yield_strength_mpa_r2": 0.88
+                    }
+                },
+                {
+                    "fold": 2,
+                    "metrics": {
+                        "yield_strength_mpa_r2": -1.1000832769671534,
+                        "yield_strength_mpa_mae": 19.41856703549152,
+                        "tensile_strength_mpa_r2": -1.4781787286318906,
+                        "tensile_strength_mpa_mae": 20.73287197217371,
+                        "hardness_hv_r2": -1.1511894867282995,
+                        "hardness_hv_mae": 9.897174103262486,
+                        "elongation_pct_r2": -8.52310470296095,
+                        "elongation_pct_mae": 2.1604977288979494
+                    }
+                }
+            ],
+            "yield_strength_mpa_r2": -399.89011467734343,
+            "yield_strength_mpa_mae": 100.08368513851454,
+            "tensile_strength_mpa_r2": -415.28330251884324,
+            "tensile_strength_mpa_mae": 101.9664845322593,
+            "hardness_hv_r2": -578.0157132799272,
+            "hardness_hv_mae": 24.006658963083908,
+            "elongation_pct_r2": -481.61301696632006,
+            "elongation_pct_mae": 5.4809942267822205
+        },
+        "alloy_family": "steel",
+        "created_at": "2026-05-19T10:09:53.995442",
+        "status": "validated"
+    }
+]

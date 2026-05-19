@@ -1,0 +1,141 @@
+name: CI/CD & Release Safety Pipeline
+
+on:
+  push:
+    branches: [ main, release-* ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install Linting dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install flake8 black holds
+
+      - name: Lint and syntax checks
+        run: |
+          # stop the build if there are Python syntax errors or undefined names
+          flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
+          # exit-zero treats all errors as warnings
+          flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
+
+  unit-tests:
+    needs: lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r backend/requirements.txt || pip install pytest numpy pandas scikit-learn pydantic sqlalchemy redis msgpack zstandard loguru scipy xgboost
+
+      - name: Execute Fast Unit Tests
+        run: |
+          pytest backend/tests/test_physics_safety.py backend/tests/test_observability.py
+
+  integration-tests:
+    needs: unit-tests
+    runs-on: ubuntu-latest
+    services:
+      redis:
+        image: redis:alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest numpy pandas scikit-learn pydantic sqlalchemy redis msgpack zstandard loguru scipy xgboost celery mapie
+
+      - name: Execute State Rollback Integration Tests
+        run: |
+          pytest backend/tests/test_checkpoint_rollback.py
+
+  model-validation:
+    needs: integration-tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest numpy pandas scikit-learn pydantic sqlalchemy redis msgpack zstandard loguru scipy xgboost celery mapie
+
+      - name: Execute Model Fitting and CV Validation tests
+        run: |
+          pytest backend/tests/test_model_lifecycle.py
+
+  docker-build:
+    needs: model-validation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Dry Run Docker Compose build
+        run: |
+          docker compose build --no-cache
+
+  deployment-checks:
+    needs: docker-build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest numpy pandas scikit-learn pydantic sqlalchemy redis msgpack zstandard loguru scipy xgboost celery mapie
+
+      - name: Execute Final Pre-Release Verification & Smoke Tests
+        run: |
+          pytest backend/tests/test_release_safety.py
