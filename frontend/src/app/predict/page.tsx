@@ -3,10 +3,11 @@
 import { useState } from "react";
 import { ChevronDown, Loader2, AlertCircle, CheckCircle2 } from "lucide-react";
 import dynamic from "next/dynamic";
+import { usePrediction } from "@/hooks/usePrediction";
+import { LoadingSkeleton } from "@/components/ui/LoadingSkeleton";
+import { ErrorAlert } from "@/components/ui/ErrorAlert";
 
 const Plot = dynamic(() => import("react-plotly.js"), { ssr: false });
-
-import axios from "axios";
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 const ALLOY_FAMILIES = ["steel", "hea", "aluminum"] as const;
@@ -29,24 +30,12 @@ const PROP_UNITS: Record<string, string> = {
   corrosion_pren: "PREN", fracture_toughness: "MPa√m",
 };
 
-// ─── API call ───────────────────────────────
-async function doPredict(payload: object) {
-  const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
-  const [mechRes, expRes] = await Promise.all([
-    axios.post(`${API_URL}/predict/mechanical`, payload),
-    axios.post(`${API_URL}/predict/explain`, payload),
-  ]);
-  return { ...mechRes.data, shap: expRes.data.shap };
-}
-
-// ─── Component ───────────────────────────────────────────────────────────────
 export default function PredictPage() {
   const [family,     setFamily]     = useState<AlloySFamily>("steel");
   const [property,   setProperty]   = useState("yield_strength");
   const [comp,       setComp]       = useState<Record<string, number>>({ Fe: 0.70, Cr: 0.18, Ni: 0.05, Mo: 0.03, Mn: 0.02, N: 0.002 });
-  const [loading,    setLoading]    = useState(false);
-  const [result,     setResult]     = useState<any>(null);
-  const [error,      setError]      = useState<string | null>(null);
+
+  const { predict, loading, error, prediction, shap, setPrediction, setShap } = usePrediction();
 
   const total = Object.values(comp).reduce((a, b) => a + b, 0);
   const isValid = Math.abs(total - 1.0) < 0.02;
@@ -60,24 +49,18 @@ export default function PredictPage() {
   }
 
   function addElement(el: string) {
-    if (!comp[el]) setComp(prev => ({ ...prev, [el]: 0 }));
+    if (comp[el] === undefined) setComp(prev => ({ ...prev, [el]: 0 }));
   }
 
   async function handlePredict() {
-    setLoading(true); setError(null); setResult(null);
-    try {
-      const res = await doPredict({ alloy_family: family, property, composition: comp });
-      setResult(res);
-    } catch (e: any) {
-      setError(e.response?.data?.detail || e.message || "Prediction failed");
-    } finally {
-      setLoading(false);
-    }
+    setPrediction(null);
+    setShap(null);
+    predict(family, property, comp);
   }
 
   const confidenceBadgeClass =
-    result?.data_confidence === "high" ? "badge-high" :
-    result?.data_confidence === "moderate" ? "badge-moderate" : "badge-low";
+    prediction?.data_confidence === "high" ? "badge-high" :
+    prediction?.data_confidence === "medium" ? "badge-moderate" : "badge-low";
 
   return (
     <main style={{ paddingTop: 80 }}>
@@ -89,7 +72,7 @@ export default function PredictPage() {
           Enter your alloy composition and get an instant ML-powered prediction with SHAP explainability.
         </p>
 
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 32, alignItems: "start" }}>
+        <div className="predict-grid" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 32, alignItems: "start" }}>
           {/* ── Input panel ─────────────────────────────────────────────── */}
           <div className="glass" style={{ padding: 32 }}>
             {/* Family select */}
@@ -99,7 +82,7 @@ export default function PredictPage() {
               </label>
               <div style={{ display: "flex", gap: 8 }}>
                 {ALLOY_FAMILIES.map(f => (
-                  <button key={f} onClick={() => { setFamily(f); setProperty(PROPERTIES[f][0]); setResult(null); }}
+                  <button key={f} onClick={() => { setFamily(f); setProperty(PROPERTIES[f][0]); setPrediction(null); setShap(null); }}
                     style={{
                       flex: 1, padding: "9px 0", borderRadius: 8, cursor: "pointer", fontSize: "0.85rem", fontWeight: 600,
                       border: family === f ? "1px solid var(--color-primary)" : "1px solid var(--color-border)",
@@ -113,13 +96,13 @@ export default function PredictPage() {
               </div>
             </div>
 
-            {/* Property select */}
+            {/* Target Property select */}
             <div style={{ marginBottom: 24 }}>
               <label style={{ fontSize: "0.8rem", fontWeight: 600, color: "var(--color-muted)", letterSpacing: "0.05em", textTransform: "uppercase", display: "block", marginBottom: 8 }}>
                 Target Property
               </label>
               <div style={{ position: "relative" }}>
-                <select value={property} onChange={e => { setProperty(e.target.value); setResult(null); }}
+                <select value={property} onChange={e => { setProperty(e.target.value); setPrediction(null); setShap(null); }}
                   className="input-field" style={{ appearance: "none", paddingRight: 36 }}>
                   {PROPERTIES[family].map(p => (
                     <option key={p} value={p}>{p.replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase())}</option>
@@ -168,7 +151,7 @@ export default function PredictPage() {
                 <select onChange={e => { if (e.target.value) addElement(e.target.value); e.target.value = ""; }}
                   className="input-field" style={{ fontSize: "0.82rem" }}>
                   <option value="">+ Add element…</option>
-                  {ELEMENTS[family].filter(el => !comp[el]).map(el => (
+                  {ELEMENTS[family].filter(el => comp[el] === undefined).map(el => (
                     <option key={el} value={el}>{el}</option>
                   ))}
                 </select>
@@ -189,7 +172,14 @@ export default function PredictPage() {
 
           {/* ── Results panel ───────────────────────────────────────────── */}
           <div>
-            {!result && !error && !loading && (
+            {loading && (
+              <div className="glass" style={{ padding: 32 }}>
+                <h3 style={{ marginBottom: 16, fontSize: "1rem", fontWeight: 600 }}>Calculating Predictions...</h3>
+                <LoadingSkeleton rows={4} />
+              </div>
+            )}
+
+            {!prediction && !error && !loading && (
               <div className="glass" style={{ padding: 48, textAlign: "center", color: "var(--color-muted)" }}>
                 <Loader2 size={40} style={{ margin: "0 auto 16px", opacity: 0.3 }} />
                 <p style={{ fontSize: "0.9rem" }}>Enter your composition and click Predict.</p>
@@ -197,13 +187,12 @@ export default function PredictPage() {
             )}
 
             {error && (
-              <div className="glass" style={{ padding: 32, color: "var(--color-danger)", display: "flex", gap: 12, alignItems: "flex-start" }}>
-                <AlertCircle size={20} style={{ flexShrink: 0, marginTop: 2 }} />
-                <p>{error}</p>
+              <div style={{ marginBottom: 20 }}>
+                <ErrorAlert message={error} />
               </div>
             )}
 
-            {result && (
+            {prediction && (
               <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
                 {/* Prediction card */}
                 <div className="glass" style={{ padding: 28 }}>
@@ -213,72 +202,130 @@ export default function PredictPage() {
                         {property.replace(/_/g, " ")}
                       </div>
                       <div style={{ fontSize: "3rem", fontWeight: 800, letterSpacing: "-0.03em" }} className="gradient-text">
-                        {result.prediction.toFixed(1)}
+                        {prediction.predictions[property]?.mean.toFixed(1) ?? "N/A"}
                         <span style={{ fontSize: "1.2rem", marginLeft: 6, color: "var(--color-muted)", fontWeight: 500 }}>
-                          {result.unit}
+                          {PROP_UNITS[property] ?? ""}
                         </span>
                       </div>
-                      <div style={{ fontSize: "0.82rem", color: "var(--color-muted)", marginTop: 4 }}>
-                        90% CI: [{result.lower.toFixed(1)}, {result.upper.toFixed(1)}] {result.unit}
-                      </div>
+                      {prediction.predictions[property] && (
+                        <div style={{ fontSize: "0.82rem", color: "var(--color-muted)", marginTop: 4 }}>
+                          Confidence interval: [{prediction.predictions[property]?.lower.toFixed(1)}, {prediction.predictions[property]?.upper.toFixed(1)}] {PROP_UNITS[property]}
+                        </div>
+                      )}
                     </div>
-                    <span className={`badge ${confidenceBadgeClass}`}>
-                      <CheckCircle2 size={12} /> {result.data_confidence} confidence
+                    <span className={`badge ${confidenceBadgeClass}`} style={{ textTransform: "capitalize" }}>
+                      <CheckCircle2 size={12} /> {prediction.data_confidence} confidence
                     </span>
                   </div>
 
-                  {/* Confidence bar */}
-                  <div style={{ background: "var(--color-surface-2)", borderRadius: 4, height: 6, overflow: "hidden", marginBottom: 8 }}>
-                    <div style={{
-                      height: "100%", borderRadius: 4,
-                      width: `${((result.prediction - result.lower) / (result.upper - result.lower + 0.01)) * 100}%`,
-                      background: "linear-gradient(90deg, var(--color-primary), var(--color-accent))",
-                    }} />
-                  </div>
+                  {/* Confidence bar visual representation */}
+                  {prediction.predictions[property] && (
+                    <div style={{ background: "var(--color-surface-2)", borderRadius: 4, height: 6, overflow: "hidden", marginBottom: 8 }}>
+                      <div style={{
+                        height: "100%", borderRadius: 4,
+                        width: `${Math.min(100, Math.max(0, ((prediction.predictions[property]!.mean - prediction.predictions[property]!.lower) / (prediction.predictions[property]!.upper - prediction.predictions[property]!.lower + 0.1)) * 100))}%`,
+                        background: "linear-gradient(90deg, var(--color-primary), var(--color-accent))",
+                      }} />
+                    </div>
+                  )}
                 </div>
 
-                {/* SHAP waterfall */}
-                <div className="glass" style={{ padding: 24 }}>
-                  <h3 style={{ fontSize: "0.9rem", fontWeight: 700, marginBottom: 16, color: "var(--color-text)" }}>
-                    SHAP Feature Contributions
+                {/* Corrosion Analysis */}
+                <div className="glass" style={{ padding: 20 }}>
+                  <h3 style={{ fontSize: "0.9rem", fontWeight: 700, marginBottom: 8, color: "var(--color-text)" }}>
+                    Corrosion Analysis (PREN)
                   </h3>
-                  <Plot
-                    data={[{
-                      type: "bar",
-                      orientation: "h",
-                      x: result.shap.waterfall.map((d: any) => d.shap),
-                      y: result.shap.waterfall.map((d: any) => d.feature),
-                      marker: {
-                        color: result.shap.waterfall.map((d: any) => d.shap > 0 ? "#6382FF" : "#FF4D6A"),
-                      },
-                    }]}
-                    layout={{
-                      height: 280,
-                      margin: { t: 8, b: 32, l: 40, r: 16 },
-                      paper_bgcolor: "transparent",
-                      plot_bgcolor: "transparent",
-                      font: { color: "#6B7A9E", size: 11 },
-                      xaxis: { gridcolor: "rgba(99,130,255,0.08)", zerolinecolor: "rgba(99,130,255,0.2)" },
-                      yaxis: { gridcolor: "transparent" },
-                    }}
-                    config={{ displayModeBar: false, responsive: true }}
-                    style={{ width: "100%" }}
-                  />
-                </div>
-
-                {/* Narrative */}
-                <div className="glass" style={{
-                  padding: 20,
-                  borderLeft: "3px solid var(--color-primary)",
-                  background: "rgba(99,130,255,0.04)",
-                }}>
-                  <div style={{ fontSize: "0.78rem", fontWeight: 700, color: "var(--color-primary)", marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.05em" }}>
-                    AI Narrative
+                  <div style={{ display: "flex", gap: 16, marginBottom: 8 }}>
+                    <div>
+                      <span style={{ fontSize: "0.78rem", color: "var(--color-muted)" }}>PREN Value: </span>
+                      <span style={{ fontWeight: 700, color: "var(--color-primary)", fontSize: "1.1rem" }}>
+                        {prediction.corrosion_analysis.pren_calculated.toFixed(1)}
+                      </span>
+                    </div>
+                    <div>
+                      <span style={{ fontSize: "0.78rem", color: "var(--color-muted)" }}>Grade: </span>
+                      <span style={{ fontWeight: 700, color: "var(--color-accent)", fontSize: "1.1rem" }}>
+                        {prediction.corrosion_analysis.corrosion_grade}
+                      </span>
+                    </div>
                   </div>
-                  <p style={{ fontSize: "0.88rem", color: "var(--color-text)", lineHeight: 1.7 }}>
-                    {result.shap.narrative}
+                  <p style={{ fontSize: "0.82rem", color: "var(--color-muted)", lineHeight: 1.5 }}>
+                    {prediction.corrosion_analysis.nace_guidance}
                   </p>
                 </div>
+
+                {/* Fatigue & Fracture Toughness */}
+                {prediction.fatigue && prediction.fracture_toughness && (
+                  <div className="glass" style={{ padding: 20 }}>
+                    <h3 style={{ fontSize: "0.9rem", fontWeight: 700, marginBottom: 12, color: "var(--color-text)" }}>
+                      Fatigue & Fracture Performance (Empirical)
+                    </h3>
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 12 }}>
+                      <div style={{ padding: 12, background: "var(--color-surface-2)", borderRadius: 8 }}>
+                        <div style={{ fontSize: "0.75rem", color: "var(--color-muted)", marginBottom: 4 }}>FATIGUE LIMIT</div>
+                        <div style={{ fontWeight: 700, fontSize: "1.2rem", color: "var(--color-text)" }}>
+                          {prediction.fatigue.fatigue_limit_mpa.toFixed(1)} <span style={{ fontSize: "0.8rem", color: "var(--color-muted)" }}>MPa</span>
+                        </div>
+                      </div>
+                      <div style={{ padding: 12, background: "var(--color-surface-2)", borderRadius: 8 }}>
+                        <div style={{ fontSize: "0.75rem", color: "var(--color-muted)", marginBottom: 4 }}>FRACTURE TOUGHNESS (KIc)</div>
+                        <div style={{ fontWeight: 700, fontSize: "1.2rem", color: "var(--color-text)" }}>
+                          {prediction.fracture_toughness.fracture_toughness_kic_mpa_sqrtm.toFixed(1)} <span style={{ fontSize: "0.8rem", color: "var(--color-muted)" }}>MPa√m</span>
+                        </div>
+                      </div>
+                    </div>
+                    <p style={{ fontSize: "0.82rem", color: "var(--color-muted)", lineHeight: 1.5 }}>
+                      <strong>NDT Flaw Size Guidance:</strong> {prediction.fracture_toughness.ndt_guidance}
+                    </p>
+                  </div>
+                )}
+
+                {/* SHAP waterfall chart */}
+                {shap && shap.top_features && shap.top_features.length > 0 && (
+                  <div className="glass" style={{ padding: 24 }}>
+                    <h3 style={{ fontSize: "0.9rem", fontWeight: 700, marginBottom: 16, color: "var(--color-text)" }}>
+                      SHAP Feature Contributions
+                    </h3>
+                    <Plot
+                      data={[{
+                        type: "bar",
+                        orientation: "h",
+                        x: shap.top_features.map((d: any) => d.shap),
+                        y: shap.top_features.map((d: any) => d.name),
+                        marker: {
+                          color: shap.top_features.map((d: any) => d.direction === "positive" ? "#6382FF" : "#FF4D6A"),
+                        },
+                      }]}
+                      layout={{
+                        height: 280,
+                        margin: { t: 8, b: 32, l: 50, r: 16 },
+                        paper_bgcolor: "transparent",
+                        plot_bgcolor: "transparent",
+                        font: { color: "#6B7A9E", size: 11 },
+                        xaxis: { gridcolor: "rgba(99,130,255,0.08)", zerolinecolor: "rgba(99,130,255,0.2)" },
+                        yaxis: { gridcolor: "transparent" },
+                      }}
+                      config={{ displayModeBar: false, responsive: true }}
+                      style={{ width: "100%" }}
+                    />
+                  </div>
+                )}
+
+                {/* AI Explanation Narrative */}
+                {shap && shap.narrative && (
+                  <div className="glass" style={{
+                    padding: 20,
+                    borderLeft: "3px solid var(--color-primary)",
+                    background: "rgba(99,130,255,0.04)",
+                  }}>
+                    <div style={{ fontSize: "0.78rem", fontWeight: 700, color: "var(--color-primary)", marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.05em" }}>
+                      AI Narrative
+                    </div>
+                    <p style={{ fontSize: "0.88rem", color: "var(--color-text)", lineHeight: 1.7 }}>
+                      {shap.narrative}
+                    </p>
+                  </div>
+                )}
               </div>
             )}
           </div>

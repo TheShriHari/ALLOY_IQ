@@ -1,211 +1,89 @@
 """
 ALLOY IQ — ML Model Engine
 ===========================
-Implements the 12-cell stacking ensemble strategy:
-
-  Rich cells   → XGBoost + RandomForest + MLP → Ridge meta-learner
-  Moderate     → Physics-informed features + same ensemble
-  Sparse       → Transfer learning + conformal prediction intervals
-
-Usage:
-    from backend.ml.model_engine import AlloyModelEngine
-    engine = AlloyModelEngine()
-    result = engine.predict(family="steel", prop="yield_strength", X=df)
+Implements the multi-output stacking ensemble strategy for alloy families:
+  - Predicts YS, UTS, HV, Elongation simultaneously.
+  - Conformal prediction via MAPIE wrapper.
+  - SHAP plain-English narrative generation.
+  - MLflow experiment tracking.
 """
 
 from __future__ import annotations
 
 import os
 import json
-import hashlib
+import time
 from pathlib import Path
 from typing import Dict, List, Literal, Optional, Tuple
 
 import joblib
 import numpy as np
 import pandas as pd
-# import shap
+from scipy.stats import pearsonr
+
 from sklearn.ensemble import RandomForestRegressor, StackingRegressor
 from sklearn.linear_model import Ridge
-from sklearn.model_selection import cross_val_score, train_test_split
+from sklearn.model_selection import train_test_split
 from sklearn.neural_network import MLPRegressor
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 from sklearn.impute import SimpleImputer, KNNImputer
-# from xgboost import XGBRegressor
-# import optuna
-import time
+from sklearn.multioutput import MultiOutputRegressor
+
+# Assuming xgboost is installed
+try:
+    from xgboost import XGBRegressor
+except ImportError:
+    from sklearn.ensemble import HistGradientBoostingRegressor as XGBRegressor
+
+import shap
+
+from backend.ml.uncertainty import AlloyUncertainty
+from backend.ml.narrative import generate_full_report, SHAPNarrativeGenerator
+from backend.ml.mlflow_config import setup_mlflow, log_training_run
 
 # ---------------------------------------------------------------------------
-# Cell coverage classification
+# Constants
 # ---------------------------------------------------------------------------
-CELL_COVERAGE: Dict[str, Dict[str, str]] = {
-    "steel": {
-        "yield_strength": "rich",
-        "hardness": "rich",
-        "fatigue_limit": "moderate",
-        "corrosion_pren": "moderate",
-        "fracture_toughness": "moderate",
-    },
-    "hea": {
-        "yield_strength": "moderate",
-        "hardness": "moderate",
-        "fatigue_limit": "sparse",
-        "corrosion_pren": "sparse",
-    },
-    "aluminum": {
-        "yield_strength": "rich",
-        "hardness": "moderate",
-        "fatigue_limit": "moderate",
-        "corrosion_pren": "sparse",
-    },
+TARGET_NAMES = ["yield_strength_mpa", "tensile_strength_mpa", "hardness_hv", "elongation_pct"]
+
+# Cell coverage classification
+CELL_COVERAGE: Dict[str, str] = {
+    "steel": "rich",
+    "hea": "moderate",
+    "aluminum": "sparse",
 }
 
 MODEL_DIR = Path(__file__).parent.parent.parent / "models"
 MODEL_DIR.mkdir(exist_ok=True)
 
-
 # ---------------------------------------------------------------------------
-# Conformal Prediction Layer
+# Family Model — multi-output stacking ensemble
 # ---------------------------------------------------------------------------
-class ConformalPredictor:
-    """
-    Split-conformal regression intervals (Papadopoulos et al.).
-    Coverage guarantee: P(y ∈ Ĉ) ≥ 1 − α without distributional assumptions.
-    """
+class FamilyModel:
+    """Stacking ensemble for an alloy family predicting all 4 core properties."""
 
-    def __init__(self, confidence: float = 0.90):
-        assert 0.5 < confidence < 1.0, "Confidence must be in (0.5, 1.0)"
-        self.confidence = confidence
-        self.alpha = 1.0 - confidence
-        self._quantile: Optional[float] = None
-
-    def calibrate(self, y_true: np.ndarray, y_pred: np.ndarray) -> None:
-        """Fit on a held-out calibration set."""
-        residuals = np.abs(y_true - y_pred)
-        n = len(residuals)
-        level = np.ceil((n + 1) * (1 - self.alpha)) / n
-        level = min(level, 1.0)
-        self._quantile = np.quantile(residuals, level)
-
-    def predict_interval(
-        self, y_pred: np.ndarray
-    ) -> Tuple[np.ndarray, np.ndarray]:
-        """Return (lower, upper) calibrated intervals."""
-        if self._quantile is None:
-            raise RuntimeError("Call calibrate() before predict_interval()")
-        return y_pred - self._quantile, y_pred + self._quantile
-
-    def save(self, path: Path) -> None:
-        joblib.dump({"quantile": self._quantile, "confidence": self.confidence}, path)
-
-    @classmethod
-    def load(cls, path: Path) -> "ConformalPredictor":
-        data = joblib.load(path)
-        cp = cls(confidence=data["confidence"])
-        cp._quantile = data["quantile"]
-        return cp
-
-
-# ---------------------------------------------------------------------------
-# SHAP Narrative Generator
-# ---------------------------------------------------------------------------
-class SHAPNarrativeGenerator:
-    """Generates plain-English SHAP explanations for a single prediction."""
-
-    # Property → unit string
-    UNITS = {
-        "yield_strength": "MPa",
-        "hardness": "HV",
-        "fatigue_limit": "MPa",
-        "corrosion_pren": "PREN units",
-        "fracture_toughness": "MPa√m",
-    }
-
-    # SHAP sign → impact descriptor
-    IMPACT = {
-        True:  "largest contributor",
-        False: "largest risk factor",
-    }
-
-    def explain(
-        self,
-        shap_values: np.ndarray,
-        feature_names: List[str],
-        base_value: float,
-        prediction: float,
-        prop: str,
-    ) -> Dict:
-        """
-        Returns:
-        {
-          "waterfall": [{"feature": str, "shap": float}, ...],
-          "narrative": str,
-          "base_value": float,
-          "prediction": float,
-        }
-        """
-        pairs = sorted(
-            zip(feature_names, shap_values),
-            key=lambda x: abs(x[1]),
-            reverse=True,
-        )
-        waterfall = [{"feature": f, "shap": float(v)} for f, v in pairs]
-        unit = self.UNITS.get(prop, "units")
-
-        # Build plain-English narrative from top-3 contributors
-        narrative_parts = []
-        for rank, (feat, val) in enumerate(pairs[:3]):
-            direction = "positive" if val > 0 else "negative"
-            magnitude = abs(val)
-            qualifier = ["single largest", "second largest", "third largest"][rank]
-            effect = "boost" if val > 0 else "penalty"
-            narrative_parts.append(
-                f"{feat} is the {qualifier} {effect} to {prop.replace('_', ' ')}, "
-                f"contributing {val:+.1f} {unit}."
-            )
-
-        narrative = " ".join(narrative_parts)
-        return {
-            "waterfall": waterfall,
-            "narrative": narrative,
-            "base_value": float(base_value),
-            "prediction": float(prediction),
-        }
-
-
-# ---------------------------------------------------------------------------
-# Cell Model — one property × one alloy family
-# ---------------------------------------------------------------------------
-class CellModel:
-    """Stacking ensemble for a single (family, property) cell."""
-
-    def __init__(
-        self,
-        family: str,
-        prop: str,
-        coverage: Literal["rich", "moderate", "sparse"],
-        confidence: float = 0.90,
-    ):
+    def __init__(self, family: str, coverage: Literal["rich", "moderate", "sparse"], confidence: float = 0.90):
         self.family = family
-        self.prop = prop
         self.coverage = coverage
         self.confidence = confidence
         self._stack: Optional[Pipeline] = None
-        self._conformal = ConformalPredictor(confidence)
+        self._conformal: Optional[AlloyUncertainty] = None
         self._explainer: Optional[shap.Explainer] = None
         self._feature_names: List[str] = []
-        self._base_value: float = 0.0
+        self._base_values: List[float] = [0.0]*4
 
     def _build_stack(self, params: Optional[Dict] = None) -> Pipeline:
         params = params or {}
-        xgb = XGBRegressor(
+        
+        xgb = MultiOutputRegressor(XGBRegressor(
             n_estimators=params.get("xgb_n_estimators", 100),
             max_depth=params.get("xgb_max_depth", 6),
             learning_rate=params.get("xgb_lr", 0.1),
             random_state=42,
-            n_jobs=-1
-        )
+        ))
+        
+        # RF is natively multi-output
         rf = RandomForestRegressor(
             n_estimators=params.get("rf_n_estimators", 100),
             max_depth=params.get("rf_max_depth", None),
@@ -213,17 +91,19 @@ class CellModel:
             random_state=42,
             n_jobs=-1,
         )
-        mlp = MLPRegressor(
+        
+        mlp = MultiOutputRegressor(MLPRegressor(
             hidden_layer_sizes=(64, 32),
             activation="relu",
             max_iter=200,
             random_state=42,
-        )
+        ))
+        
         stack = StackingRegressor(
             estimators=[("xgb", xgb), ("rf", rf), ("mlp", mlp)],
-            final_estimator=Ridge(alpha=1.0),
+            final_estimator=MultiOutputRegressor(Ridge(alpha=1.0)),
             cv=3,
-            passthrough=False,
+            passthrough=True,
             n_jobs=-1,
         )
 
@@ -237,163 +117,172 @@ class CellModel:
         
         return Pipeline(steps)
 
-    # ------------------------------------------------------------------
-    def fit(self, X: pd.DataFrame, y: pd.Series) -> Dict:
-        """Train ensemble + calibrate conformal layer. Returns metrics."""
+    def fit(self, X: pd.DataFrame, y: pd.DataFrame) -> Dict:
+        """Train ensemble + calibrate MAPIE layer. y must have all 4 TARGET_NAMES."""
         self._feature_names = list(X.columns)
-
+        
+        setup_mlflow()
+        
         # Split: 80% train, 10% val (conformal), 10% test
-        X_tr, X_cal, y_tr, y_cal = train_test_split(X, y, test_size=0.20, random_state=42)
+        X_tr, X_cal, y_tr, y_cal = train_test_split(X, y[TARGET_NAMES], test_size=0.20, random_state=42)
         X_cal, X_test, y_cal, y_test = train_test_split(X_cal, y_cal, test_size=0.50, random_state=42)
 
-        best_params = {}
-        if self.coverage == "rich":
-            def objective(trial):
-                params = {
-                    "xgb_n_estimators": trial.suggest_int("xgb_n_estimators", 50, 200),
-                    "xgb_max_depth": trial.suggest_int("xgb_max_depth", 3, 9),
-                    "xgb_lr": trial.suggest_float("xgb_lr", 1e-3, 0.3, log=True),
-                    "rf_n_estimators": trial.suggest_int("rf_n_estimators", 50, 200),
-                }
-                model = self._build_stack(params)
-                score = cross_val_score(model, X_tr, y_tr, cv=3, scoring="neg_mean_squared_error").mean()
-                return score
-                
-            optuna.logging.set_verbosity(optuna.logging.WARNING)
-            study = optuna.create_study(direction="maximize")
-            study.optimize(objective, n_trials=5, n_jobs=1)
-            best_params = study.best_params
+        # Log transform targets
+        y_tr_log = np.log1p(y_tr)
+        y_cal_log = np.log1p(y_cal)
 
-        self._stack = self._build_stack(best_params)
-        self._stack.fit(X_tr, y_tr)
-
-        # Calibrate conformal
-        y_cal_pred = self._stack.predict(X_cal)
-        self._conformal.calibrate(y_cal.values, y_cal_pred)
-
-        # SHAP explainer (use XGBoost sub-model for speed)
-        xgb_model = self._stack.named_steps["stack"].estimators_[0]
+        # Build & Fit stack
+        self._stack = self._build_stack()
+        self._stack.fit(X_tr, y_tr_log)
         
-        # apply transforms up to stack
+        # Store summary stats for PDP
+        self._X_median = X_tr.median(axis=0).values
+        self._X_lo = X_tr.quantile(0.05).values
+        self._X_hi = X_tr.quantile(0.95).values
+        
+        # Conformal Calibrate
+        self._conformal = AlloyUncertainty(base_model=self._stack)
+        self._conformal.calibrate(X_cal, y_cal_log.values, alpha=1.0 - self.confidence)
+
+        # SHAP explainer (using RF for multi-output SHAP approximations, or XGB)
+        rf_model = self._stack.named_steps["stack"].estimators_[1]
         X_tr_transformed = X_tr.copy()
         for name, transformer in self._stack.steps[:-1]:
             X_tr_transformed = pd.DataFrame(transformer.transform(X_tr_transformed), columns=self._feature_names)
-            
-        self._explainer = shap.TreeExplainer(xgb_model)
-        self._base_value = float(self._explainer.expected_value[0] if isinstance(self._explainer.expected_value, np.ndarray) else self._explainer.expected_value)
+        
+        try:
+            self._explainer = shap.TreeExplainer(rf_model)
+            self._base_values = [float(ev) for ev in self._explainer.expected_value] if hasattr(self._explainer, 'expected_value') else [0.0]*4
+        except Exception:
+            self._base_values = [0.0]*4
 
         # Test metrics
-        y_test_pred = self._stack.predict(X_test)
-        ss_res = np.sum((y_test.values - y_test_pred) ** 2)
-        ss_tot = np.sum((y_test.values - y_test.mean()) ** 2)
-        r2 = 1 - ss_res / ss_tot
-        rmse = np.sqrt(np.mean((y_test.values - y_test_pred) ** 2))
-        mae = np.mean(np.abs(y_test.values - y_test_pred))
+        y_test_pred_log = self._stack.predict(X_test)
+        y_test_pred = np.expm1(y_test_pred_log)
+        
+        # Sanity check correlation
+        try:
+            r, p = pearsonr(y_test_pred[:, 0], y_test_pred[:, 3]) # YS vs elong
+            if r >= -0.2:
+                print(f"WARNING: Expected negative YS-elongation correlation, got r={r:.2f}")
+        except Exception:
+            pass
 
-        return {"r2": float(r2), "rmse": float(rmse), "mae": float(mae), "n_train": len(X_tr)}
+        metrics = {"n_train": len(X_tr)}
+        for i, target in enumerate(TARGET_NAMES):
+            ss_res = np.sum((y_test.iloc[:, i] - y_test_pred[:, i]) ** 2)
+            ss_tot = np.sum((y_test.iloc[:, i] - y_test.iloc[:, i].mean()) ** 2)
+            r2 = 1 - ss_res / ss_tot if ss_tot > 0 else 0
+            metrics[f"{target}_r2"] = float(r2)
 
-    # ------------------------------------------------------------------
+        log_training_run(params={"coverage": self.coverage}, metrics=metrics, model=self._stack, artifacts=[])
+
+        return metrics
+
     def predict(self, X: pd.DataFrame) -> Dict:
-        """
-        Returns:
-        {
-          "prediction": float,
-          "lower": float,
-          "upper": float,
-          "confidence": float,
-          "shap": { waterfall, narrative, base_value, prediction },
-          "data_confidence": "high"|"moderate"|"low",
-        }
-        """
         confidence_map = {"rich": "high", "moderate": "moderate", "sparse": "low"}
         
-        if self._stack is None:
-            # Fallback dummy data for development
-            import random
-            pred = 800 + random.random() * 100
-            features = list(X.columns)[:10] if not X.empty else ["Fe", "Cr", "Ni"]
-            waterfall = [
-                {"feature": f, "shap": (random.random() - 0.5) * 20}
-                for f in features
-            ]
-            waterfall.sort(key=lambda x: abs(x["shap"]), reverse=True)
-            narrative = f"{waterfall[0]['feature']} is the largest contributor." if waterfall else "No features."
-            
+        if self._stack is None or self._conformal is None:
+            # Fallback mock for dev
+            res = {}
+            for t in TARGET_NAMES:
+                res[t] = {"mean": 800.0, "lower": 750.0, "upper": 850.0}
             return {
-                "prediction": pred,
-                "lower": pred - 50,
-                "upper": pred + 50,
-                "confidence": self.confidence,
-                "shap": {
-                    "waterfall": waterfall,
-                    "narrative": f"[DEV MOCK] {narrative}",
-                    "base_value": 750.0,
-                    "prediction": pred
-                },
+                "predictions": res,
+                "confidence_level": self.confidence,
                 "data_confidence": confidence_map[self.coverage],
+                "shap": {"frac_C": 100.0, "frac_Fe": 50.0},
+                "narrative": "Model not loaded. This is a placeholder.",
             }
 
-        y_pred = self._stack.predict(X)[0]
-        lower, upper = self._conformal.predict_interval(np.array([y_pred]))
-
-        # SHAP for first row
+        # Conformal predictions
+        uq_res = self._conformal.predict(X)
+        
+        # SHAP
         scaler = self._stack.named_steps["scaler"]
         X_scaled = pd.DataFrame(scaler.transform(X[:1]), columns=self._feature_names)
-        xgb_model = self._stack.named_steps["stack"].estimators_[0]
-        sv = shap.TreeExplainer(xgb_model).shap_values(X_scaled)[0]
+        rf_model = self._stack.named_steps["stack"].estimators_[1]
+        
+        try:
+            shap_values = shap.TreeExplainer(rf_model).shap_values(X_scaled)
+            # shap_values could be list of arrays per target
+            shap_dict = {
+                t: {f: float(shap_values[i][0][j]) for j, f in enumerate(self._feature_names)}
+                for i, t in enumerate(TARGET_NAMES)
+            }
+        except Exception:
+            shap_dict = {t: {} for t in TARGET_NAMES}
 
-        narrator = SHAPNarrativeGenerator()
-        shap_out = narrator.explain(sv, self._feature_names, self._base_value, y_pred, self.prop)
+        # Generate narratives
+        narratives = generate_full_report(shap_dict, uq_res, uq_res)
 
-        confidence_map = {"rich": "high", "moderate": "moderate", "sparse": "low"}
+        # Average interval width logic for data confidence
+        mean_val = uq_res["yield_strength_mpa"]["mean"]
+        interval_width = uq_res["yield_strength_mpa"]["upper"] - uq_res["yield_strength_mpa"]["lower"]
+        avg_width = mean_val * 0.18
+        if interval_width < avg_width * 1.5:
+            data_conf = "high"
+        elif interval_width < avg_width * 3.0:
+            data_conf = "moderate"
+        else:
+            data_conf = "low"
+
         return {
-            "prediction": float(y_pred),
-            "lower": float(lower[0]),
-            "upper": float(upper[0]),
-            "confidence": self.confidence,
-            "shap": shap_out,
-            "data_confidence": confidence_map[self.coverage],
+            "predictions": uq_res,
+            "confidence_level": self.confidence,
+            "data_confidence": data_conf,
+            "shap_dicts": shap_dict,
+            "narratives": narratives,
         }
 
-    # ------------------------------------------------------------------
     def save(self) -> None:
-        cell_id = f"{self.family}__{self.prop}"
+        cell_id = f"{self.family}__multi"
         joblib.dump(self._stack, MODEL_DIR / f"{cell_id}__stack.pkl")
         self._conformal.save(MODEL_DIR / f"{cell_id}__conformal.pkl")
         meta = {
             "family": self.family,
-            "prop": self.prop,
             "coverage": self.coverage,
             "confidence": self.confidence,
             "feature_names": self._feature_names,
-            "base_value": self._base_value,
+            "base_values": self._base_values,
+            "X_median": self._X_median.tolist() if hasattr(self, "_X_median") else None,
+            "X_lo": self._X_lo.tolist() if hasattr(self, "_X_lo") else None,
+            "X_hi": self._X_hi.tolist() if hasattr(self, "_X_hi") else None,
         }
         (MODEL_DIR / f"{cell_id}__meta.json").write_text(json.dumps(meta, indent=2))
+        (MODEL_DIR / "target_names.json").write_text(json.dumps(TARGET_NAMES))
 
     @classmethod
-    def load(cls, family: str, prop: str) -> "CellModel":
-        cell_id = f"{family}__{prop}"
+    def load(cls, family: str) -> "FamilyModel":
+        cell_id = f"{family}__multi"
         meta = json.loads((MODEL_DIR / f"{cell_id}__meta.json").read_text())
-        model = cls(family, prop, meta["coverage"], meta["confidence"])
+        model = cls(family, meta["coverage"], meta["confidence"])
         model._stack = joblib.load(MODEL_DIR / f"{cell_id}__stack.pkl")
-        model._conformal = ConformalPredictor.load(MODEL_DIR / f"{cell_id}__conformal.pkl")
+        
+        # Load conformal predictor properly
+        from backend.ml.uncertainty import AlloyUncertainty
+        conformal_obj = joblib.load(MODEL_DIR / f"{cell_id}__conformal.pkl")
+        model._conformal = conformal_obj
+        
         model._feature_names = meta["feature_names"]
-        model._base_value = meta["base_value"]
+        model._base_values = meta.get("base_values", [0.0]*4)
+        if meta.get("X_median") is not None:
+            model._X_median = np.array(meta["X_median"])
+            model._X_lo = np.array(meta["X_lo"])
+            model._X_hi = np.array(meta["X_hi"])
         return model
-
 
 # ---------------------------------------------------------------------------
 # AlloyModelEngine — top-level registry & router
 # ---------------------------------------------------------------------------
 class AlloyModelEngine:
-    """Loads / trains / routes predictions across all 12 cells."""
+    """Loads / trains / routes predictions across all families."""
 
     def __init__(self):
-        self._models: Dict[str, CellModel] = {}
+        self._models: Dict[str, FamilyModel] = {}
 
     @staticmethod
     def wait_for_ingestion(timeout_sec: int = 600, check_interval: int = 5) -> bool:
-        """Polls agent_tracker.json until Tier 1-4 .parquet files are logged."""
         tracker_path = Path(__file__).parent.parent.parent / "agent_tracker.json"
         start_time = time.time()
         while time.time() - start_time < timeout_sec:
@@ -401,9 +290,7 @@ class AlloyModelEngine:
                 try:
                     with open(tracker_path, "r") as f:
                         tracker_data = json.load(f)
-                    
                     parquets = tracker_data.get("parquet_files", {})
-                    # Check if we have files for all tiers
                     if all(t in str(parquets) for t in ["tier1", "tier2", "tier3", "tier4"]):
                         return True
                 except json.JSONDecodeError:
@@ -411,40 +298,32 @@ class AlloyModelEngine:
             time.sleep(check_interval)
         return False
 
-    def _key(self, family: str, prop: str) -> str:
-        return f"{family}__{prop}"
-
-    def load_or_create(self, family: str, prop: str) -> CellModel:
-        key = self._key(family, prop)
-        if key in self._models:
-            return self._models[key]
+    def load_or_create(self, family: str) -> FamilyModel:
+        if family in self._models:
+            return self._models[family]
 
         # Try loading persisted model
-        meta_path = MODEL_DIR / f"{key}__meta.json"
+        meta_path = MODEL_DIR / f"{family}__multi__meta.json"
         if meta_path.exists():
-            m = CellModel.load(family, prop)
+            m = FamilyModel.load(family)
         else:
-            coverage = CELL_COVERAGE.get(family, {}).get(prop, "sparse")
-            m = CellModel(family, prop, coverage)  # type: ignore[arg-type]
+            coverage = CELL_COVERAGE.get(family, "sparse")
+            m = FamilyModel(family, coverage)
 
-        self._models[key] = m
+        self._models[family] = m
         return m
 
-    def predict(self, family: str, prop: str, X: pd.DataFrame) -> Dict:
-        model = self.load_or_create(family, prop)
+    def predict(self, family: str, X: pd.DataFrame) -> Dict:
+        model = self.load_or_create(family)
         return model.predict(X)
 
-    def train(self, family: str, prop: str, X: pd.DataFrame, y: pd.Series) -> Dict:
-        coverage = CELL_COVERAGE.get(family, {}).get(prop, "sparse")
-        model = CellModel(family, prop, coverage)  # type: ignore[arg-type]
+    def train(self, family: str, X: pd.DataFrame, y: pd.DataFrame) -> Dict:
+        coverage = CELL_COVERAGE.get(family, "sparse")
+        model = FamilyModel(family, coverage)
         metrics = model.fit(X, y)
         model.save()
-        self._models[self._key(family, prop)] = model
-        return {"cell": f"{family}/{prop}", **metrics}
+        self._models[family] = model
+        return {"family": family, **metrics}
 
-    def available_cells(self) -> List[Dict]:
-        return [
-            {"family": fam, "property": prop, "coverage": cov}
-            for fam, props in CELL_COVERAGE.items()
-            for prop, cov in props.items()
-        ]
+    def get_model(self, family: str):
+        return self.load_or_create(family)

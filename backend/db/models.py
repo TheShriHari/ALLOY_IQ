@@ -88,3 +88,16 @@ class InverseDesignJob(Base):
     completed_at   = Column(DateTime, nullable=True)
 
     user           = relationship("User", back_populates="inverse_jobs")
+
+
+class RenderJob(Base):
+    __tablename__ = "render_jobs"
+
+    id          = Column(String, primary_key=True, default=_uuid)
+    user_id     = Column(String, ForeignKey("users.id"), nullable=False, index=True)
+    composition = Column(JSON, nullable=False)
+    predictions = Column(JSON, nullable=True)
+    status      = Column(String(20), default="queued")  # queued | running | complete | failed
+    image_url   = Column(String(500), nullable=True)
+    created_at  = Column(DateTime, default=datetime.utcnow)
+

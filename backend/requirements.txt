@@ -23,6 +23,8 @@ scikit-learn==1.4.2
 xgboost==2.0.3
 # torch==2.3.0
 optuna==3.6.1
+mapie
+mlflow
 
 # ── Testing ──────────────────────────────────────────────────────────────────
 pytest==8.2.0

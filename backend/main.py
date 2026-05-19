@@ -22,7 +22,8 @@ from pydantic import BaseModel, EmailStr, field_validator
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
-from backend.db.models import Base, InverseDesignJob, PredictionJob, User
+from backend.db.models import Base, InverseDesignJob, PredictionJob, User, RenderJob
+from backend.tasks.render_task import render_microstructure
 from backend.ml.model_engine import AlloyModelEngine
 from backend.data.features import FeatureEngineer
 import pandas as pd
@@ -87,10 +88,17 @@ def get_db():
 # Auth utilities
 # ---------------------------------------------------------------------------
 def verify_password(plain: str, hashed: str) -> bool:
-    return pwd_ctx.verify(plain, hashed)
+    import bcrypt
+    try:
+        return bcrypt.checkpw(plain.encode("utf-8"), hashed.encode("utf-8"))
+    except Exception:
+        return False
 
 def hash_password(plain: str) -> str:
-    return pwd_ctx.hash(plain)
+    import bcrypt
+    salt = bcrypt.gensalt()
+    return bcrypt.hashpw(plain.encode("utf-8"), salt).decode("utf-8")
+
 
 def create_access_token(data: dict) -> str:
     to_encode = data.copy()
@@ -142,7 +150,7 @@ class TokenResponse(BaseModel):
 
 class PredictRequest(BaseModel):
     alloy_family: str        # steel | hea | aluminum
-    property: str            # yield_strength | hardness | …
+    property: str = "yield_strength_mpa"
     composition: Dict[str, float]   # {element: weight_fraction}
     processing: Optional[Dict[str, float]] = None
     confidence: float = 0.90
@@ -156,16 +164,20 @@ class PredictRequest(BaseModel):
         return {k: val / total for k, val in v.items()}
 
 class MechanicalResponse(BaseModel):
-    job_id: str
-    prediction: float
-    lower: float
-    upper: float
-    confidence: float
+    job_id: Optional[str] = None
+    predictions: Dict[str, Dict[str, float]]
+    confidence_level: float
     data_confidence: str
-    unit: str
+    corrosion_analysis: Optional[Dict[str, Any]] = None
 
 class ExplainResponse(BaseModel):
-    shap: Dict[str, Any]
+    shap_values: Dict[str, float]
+    narrative: str
+
+class PDPRequest(BaseModel):
+    element: str
+    alloy_family: str
+    composition: Dict[str, float]
 
 class InverseRequest(BaseModel):
     alloy_family: str
@@ -204,12 +216,24 @@ PROPERTY_UNITS = {
 # Helper: build feature DataFrame from request
 # ---------------------------------------------------------------------------
 def _build_feature_df(req: PredictRequest) -> pd.DataFrame:
+    from backend.cache.redis_client import get_cached_features, set_cached_features
+    # Check cache
+    cached = get_cached_features(req.composition)
+    if cached and "features" in cached:
+        return pd.DataFrame(cached["features"])
+
     row = dict(req.composition)
     if req.processing:
         row.update(req.processing)
     df = pd.DataFrame([row])
     fe = FeatureEngineer(req.alloy_family)
-    return fe.transform(df)
+    df_transformed = fe.transform(df)
+
+    # Cache transformed features
+    set_cached_features(req.composition, {"features": df_transformed.to_dict(orient="records")})
+
+    return df_transformed
+
 
 
 # ---------------------------------------------------------------------------
@@ -250,23 +274,35 @@ def predict_mechanical(
 ):
     try:
         df_feat = _build_feature_df(req)
-        result  = model_engine.predict(req.alloy_family, req.property, df_feat)
+        result  = model_engine.predict(req.alloy_family, df_feat)
+        
+        # Corrosion Physics
+        from backend.ml.corrosion_features import compute_corrosion_metrics
+        pren_pred = result["predictions"].get("corrosion_pren", {}).get("mean", 0.0)
+        corrosion = compute_corrosion_metrics(req.composition, pren_pred)
+
     except Exception as e:
         logger.exception("Prediction failed")
         raise HTTPException(500, f"Prediction error: {e}")
 
+    # Fallback/default property tracking
+    target = req.property if req.property in result["predictions"] else "yield_strength_mpa"
+    pred_val = result["predictions"].get(target, {}).get("mean", 0.0)
+    low_val = result["predictions"].get(target, {}).get("lower", 0.0)
+    high_val = result["predictions"].get(target, {}).get("upper", 0.0)
+
     job = PredictionJob(
         user_id         = current_user.id,
         alloy_family    = req.alloy_family,
-        property_target = req.property,
+        property_target = target,
         composition     = req.composition,
         processing      = req.processing,
-        prediction      = result["prediction"],
-        lower_ci        = result["lower"],
-        upper_ci        = result["upper"],
-        confidence      = result["confidence"],
+        prediction      = pred_val,
+        lower_ci        = low_val,
+        upper_ci        = high_val,
+        confidence      = result["confidence_level"],
         data_confidence = result["data_confidence"],
-        shap_data       = result["shap"],
+        shap_data       = result.get("shap_dicts", {}).get(target, {}),
         status          = "done",
         completed_at    = datetime.utcnow(),
     )
@@ -276,12 +312,10 @@ def predict_mechanical(
 
     return MechanicalResponse(
         job_id          = job.id,
-        prediction      = result["prediction"],
-        lower           = result["lower"],
-        upper           = result["upper"],
-        confidence      = result["confidence"],
+        predictions     = result["predictions"],
+        confidence_level= result["confidence_level"],
         data_confidence = result["data_confidence"],
-        unit            = PROPERTY_UNITS.get(req.property, ""),
+        corrosion_analysis = corrosion,
     )
 
 @app.post("/predict/explain", response_model=ExplainResponse, tags=["Prediction"])
@@ -291,11 +325,63 @@ def predict_explain(
 ):
     try:
         df_feat = _build_feature_df(req)
-        result  = model_engine.predict(req.alloy_family, req.property, df_feat)
-        return ExplainResponse(shap=result["shap"])
+        result  = model_engine.predict(req.alloy_family, df_feat)
+        target = req.property if req.property in result["shap_dicts"] else "yield_strength_mpa"
+        return ExplainResponse(
+            shap_values=result["shap_dicts"].get(target, {}),
+            narrative=result["narratives"].get(target, "Narrative unavailable.")
+        )
     except Exception as e:
         logger.exception("Explain prediction failed")
         raise HTTPException(500, f"Explain error: {e}")
+
+@app.post("/api/v1/explain/pdp", tags=["Explain"])
+def get_pdp(req: PDPRequest, current_user: User = Depends(get_current_user)):
+    try:
+        from backend.ml.pdp import compute_pdp
+        model_obj = model_engine.get_model(req.alloy_family)
+        if not model_obj._stack:
+            raise HTTPException(400, "Model not trained")
+            
+        scaler = model_obj._stack.named_steps["scaler"]
+        result = compute_pdp(
+            model=model_obj._stack,
+            scaler=scaler,
+            X_median=model_obj._X_median,
+            X_lo=model_obj._X_lo,
+            X_hi=model_obj._X_hi,
+            feature_name=f"frac_{req.element}",
+            feature_names=model_obj._feature_names,
+        )
+        return result
+    except Exception as e:
+        logger.exception("PDP failed")
+        raise HTTPException(500, f"PDP error: {e}")
+
+@app.get("/api/v1/model/versions", tags=["MLflow"])
+def get_model_versions():
+    import mlflow
+    from backend.ml.mlflow_config import EXPERIMENT_NAME, setup_mlflow
+    try:
+        setup_mlflow()
+        experiment = mlflow.get_experiment_by_name(EXPERIMENT_NAME)
+        if not experiment:
+            return []
+        runs = mlflow.search_runs(experiment_ids=[experiment.experiment_id], max_results=5)
+        
+        # convert df to list of dicts, avoiding NaNs
+        res = []
+        for _, row in runs.iterrows():
+            res.append({
+                "run_id": row.get("run_id"),
+                "status": row.get("status"),
+                "metrics": {k.replace("metrics.", ""): v for k, v in row.items() if k.startswith("metrics.") and pd.notna(v)},
+                "params": {k.replace("params.", ""): v for k, v in row.items() if k.startswith("params.") and pd.notna(v)},
+            })
+        return res
+    except Exception as e:
+        logger.warning(f"MLflow fetch failed: {e}")
+        return []
 
 
 @app.get("/predict/{job_id}", tags=["Prediction"])
@@ -439,3 +525,65 @@ def health():
 @app.get("/cells", tags=["Meta"])
 def list_cells():
     return {"cells": model_engine.available_cells()}
+
+
+# ---------------------------------------------------------------------------
+# Routes — Blender Render
+# ---------------------------------------------------------------------------
+class RenderRequest(BaseModel):
+    composition: Dict[str, float]
+    predictions: Dict[str, Any]
+
+@app.post("/blender/render", tags=["Blender"])
+def request_render(
+    body: RenderRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    import uuid
+    job_id = str(uuid.uuid4())
+    
+    # Save job to DB with status="queued"
+    job = RenderJob(
+        id=job_id,
+        user_id=current_user.id,
+        composition=body.composition,
+        predictions=body.predictions,
+        status="queued"
+    )
+    db.add(job)
+    db.commit()
+
+    # Dispatch Celery background task
+    try:
+        render_microstructure.delay(job_id, body.composition, body.predictions)
+    except Exception as e:
+        logger.exception("Failed to dispatch Celery rendering task")
+        # Fallback to local background tasks or mark as failed
+        job.status = "failed"
+        db.commit()
+        raise HTTPException(500, f"Background worker dispatch error: {e}")
+
+    return {"job_id": job_id, "status": "queued"}
+
+
+@app.get("/blender/render/{job_id}", tags=["Blender"])
+def poll_render(
+    job_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    job = db.query(RenderJob).filter(
+        RenderJob.id == job_id,
+        RenderJob.user_id == current_user.id
+    ).first()
+    
+    if not job:
+        raise HTTPException(404, "Render job not found")
+        
+    return {
+        "job_id": job.id,
+        "status": job.status,
+        "image_url": job.image_url
+    }
+

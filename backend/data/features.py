@@ -183,50 +183,31 @@ class FeatureEngineer:
         """
         ΔSmix (configurational entropy), VEC (valence electron concentration),
         δ (atomic size mismatch), ΔHmix (Miedema pair interactions).
+        Delegated to backend.ml.hea_features for physical accuracy.
         """
-        fracs = df[elements].values  # shape (n, k)
-        vecs  = np.array([ELEMENT_PROPS[e][1] for e in elements])
-        radii = np.array([ELEMENT_PROPS[e][0] for e in elements])
+        from pymatgen.core.composition import Composition
+        from backend.ml.hea_features import compute_hea_features
+        
+        results = []
+        for _, row in df.iterrows():
+            comp_dict = {el: row[el] for el in elements if row[el] > 0}
+            try:
+                comp = Composition(comp_dict)
+                features = compute_hea_features(comp)
+            except Exception:
+                features = {
+                    "feat_hea_mixing_entropy": 0.0,
+                    "feat_hea_mixing_enthalpy": 0.0,
+                    "feat_hea_atomic_mismatch": 0.0,
+                    "feat_hea_vec": 0.0,
+                    "feat_hea_n_elements": 0,
+                    "feat_hea_omega": 0.0,
+                }
+            results.append(features)
+        
+        df_hea = pd.DataFrame(results, index=df.index)
+        return pd.concat([df, df_hea], axis=1)
 
-        # --- ΔSmix = -R * Σ(xi * ln(xi)) ---
-        R = 8.314  # J / (mol·K)
-        safe_fracs = np.where(fracs > 0, fracs, 1e-12)
-        df["delta_Smix"] = -R * (fracs * np.log(safe_fracs)).sum(axis=1)
-
-        # --- VEC = Σ(xi * VECi) ---
-        df["VEC"] = fracs @ vecs
-
-        # --- δ = sqrt(Σ xi*(1 - ri/r̄)²) * 100 ---
-        r_bar = (fracs @ radii)[:, None]
-        df["delta_atomic_size"] = np.sqrt(
-            (fracs * (1.0 - radii / r_bar) ** 2).sum(axis=1)
-        ) * 100.0
-
-        # --- ΔHmix (Miedema pair interactions) ---
-        n = len(elements)
-        hmix = np.zeros(len(df))
-        for i in range(n):
-            for j in range(i + 1, n):
-                key = frozenset([elements[i], elements[j]])
-                h_ij = MIEDEMA_H.get(key, 0.0)
-                hmix += 4.0 * fracs[:, i] * fracs[:, j] * h_ij
-        df["delta_Hmix"] = hmix
-
-        # --- Ω parameter (Yang & Zhang criterion) ---
-        # Ω = Tm_avg * ΔSmix / |ΔHmix|
-        # Use a rough Tm proxy from literature averages
-        TM_APPROX = {
-            "Fe": 1811, "Cr": 2180, "Ni": 1728, "Mo": 2896,
-            "Co": 1768, "Al": 933,  "Ti": 1941, "V":  2183,
-            "Cu": 1358, "Mn": 1519, "Nb": 2750, "Zr": 2128,
-            "W":  3695, "Ta": 3290, "Hf": 2506,
-        }
-        tm_vals = np.array([TM_APPROX.get(e, 1800) for e in elements])
-        tm_avg  = fracs @ tm_vals
-        denom   = np.where(np.abs(hmix) > 1e-6, np.abs(hmix), 1e-6)
-        df["omega"] = tm_avg * df["delta_Smix"] / denom
-
-        return df
 
     # ------------------------------------------------------------------ #
     #  Aluminum-specific                                                   #
